@@ -46,13 +46,15 @@ class PairsFinder:
         ret1 = returns[symbol1].loc[common_index[1:]]
         ret2 = returns[symbol2].loc[common_index[1:]]
         correlation = ret1.corr(ret2)
-        
+
         if abs(correlation) < self.config.min_correlation:
             return None
         
         coint_stat, p_value, critical_values = coint(price1, price2)
         is_cointegrated = p_value < self.config.cointegration_threshold
-        
+        print(symbol1, symbol2)
+        #print(p_value)
+
         if not is_cointegrated:
             return None
         
@@ -61,18 +63,18 @@ class PairsFinder:
         reg = LinearRegression().fit(X, y)
         hedge_ratio = reg.coef_[0]
         
-        spread = price1 - hedge_ratio * price2
-        spread_mean = spread.mean()
-        spread_std = spread.std()
-        
+        raw_spread = price1 - hedge_ratio * price2
+        # spread_mean = spread.mean()
+        # spread_std = spread.std()
+        normalized_spread = raw_spread / price1  # or use geometric mean of both prices
+        spread_std = normalized_spread.std()
         if spread_std < self.config.min_spread_std or spread_std > self.config.max_spread_std:
             return None
-        
-        half_life = self._calculate_half_life(spread)
-        sharpe_ratio = self._calculate_spread_sharpe(spread)
+        print(spread_std)
+        half_life = self._calculate_half_life(raw_spread)
+        sharpe_ratio = self._calculate_spread_sharpe(raw_spread)
         volatility_ratio = ret1.std() / ret2.std() if ret2.std() > 0 else 0
         quality_score = self._calculate_quality_score(abs(correlation), p_value, spread_std, half_life, sharpe_ratio)
-        
         return {
             'symbol1': symbol1,
             'symbol2': symbol2,
@@ -80,7 +82,7 @@ class PairsFinder:
             'correlation': correlation,
             'cointegration_pvalue': p_value,
             'hedge_ratio': hedge_ratio,
-            'spread_mean': spread_mean,
+            'spread_mean': 0,
             'spread_std': spread_std,
             'half_life': half_life,
             'sharpe_ratio': sharpe_ratio,

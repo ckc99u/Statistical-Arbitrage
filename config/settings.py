@@ -9,7 +9,11 @@ from pathlib import Path
 
 @dataclass
 class DataConfig:
-    universe: List[str] = field(default_factory=lambda: ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'SPY', 'QQQ'])
+    universe: List[str] = field(default_factory=lambda: ['SPY', 'QQQ', 'GLD', 'SLV', 'USO', 'TLT', # Broad ETFs
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META',] # Tech
+        # 'JPM', 'GS', 'BAC', 'WFC', # Financials
+        # 'XLE', 'XOM', 'CVX'] # Energy
+        )
     start_date: str = '2019-01-01'
     end_date: str = '2024-01-01'
     data_source: str = 'yahoo'
@@ -21,11 +25,11 @@ class DataConfig:
 
 @dataclass
 class PairsConfig:
-    min_correlation: float = 0.7
-    max_correlation: float = 0.95
-    cointegration_threshold: float = 0.05
-    min_spread_std: float = 0.01
-    max_spread_std: float = 0.20
+    min_correlation: float = 0.6  # Lowered from 0.7
+    max_correlation: float = 0.98
+    cointegration_threshold: float = 0.10 # Increased from 0.05
+    min_spread_std: float = 0.005
+    max_spread_std: float = 0.25
     min_observations: int = 100
     exclude_pairs: List[str] = field(default_factory=list)
 
