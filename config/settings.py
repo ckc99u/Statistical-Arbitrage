@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import json
 from pathlib import Path
+from datetime import datetime
 
 @dataclass
 class DataConfig:
@@ -14,13 +15,13 @@ class DataConfig:
         'JPM', 'GS', 'BAC', 'WFC', # Financials
         'XLE', 'XOM', 'CVX'] # Energy
         )
-    start_date: str = '2019-01-01'
-    end_date: str = '2024-01-01'
+    start_date: str = '2020-01-01'
+    end_date: str = datetime.now().strftime('%Y-%m-%d')#'2024-01-01'
     data_source: str = 'yahoo'
     frequency: str = '1d'
     fill_method: str = 'forward'
     min_history_days: int = 252
-    cache_data: bool = True
+    cache_data: bool = False
     cache_directory: str = './data/cache'
 
 @dataclass
@@ -61,7 +62,7 @@ class RiskConfig:
 
 @dataclass
 class BacktestConfig:
-    train_test_split: float = 0.5
+    test_start_date: str = '2022-01-01'
     rebalance_frequency: str = 'daily'
     benchmark: str = 'SPY'
 

@@ -15,9 +15,9 @@ def setup_logging(log_level='INFO'):
 
 def main():
     config = SystemConfig()
-    setup_logging(config.log_level)
-    
+    setup_logging("WARNING") 
     logger = logging.getLogger(__name__)
+    
     logger.info("Starting Statistical Arbitrage System")
     
     data_provider = DataProvider(config.data)
@@ -39,15 +39,20 @@ def main():
     logger.info(f"Found {len(pairs)} valid pairs")
     
     logger.info("Running backtest...")
-    results = backtest_engine.run_backtest(data, pairs[:10], signal_generator, risk_manager)  # Limit to top 10 pairs
-    
-    logger.info("Backtest Results:")
-    for metric, value in results['performance'].items():
-        if isinstance(value, float):
-            logger.info(f"{metric}: {value:.4f}")
-        else:
-            logger.info(f"{metric}: {value}")
-    
+    results = backtest_engine.run_backtest(data, pairs, signal_generator, risk_manager)
+    print(results['overall_performance'])
+
+    pair_performance = results['pair_performance']
+    for pair_name, stats in pair_performance.items():
+        print(f"--- Performance for Pair: {pair_name} ---")
+        
+        # Access and print each metric
+        print(f"  Sharpe Ratio: {stats.get('sharpe_ratio', 'N/A'):.2f}")
+        print(f"  Max Drawdown: {stats.get('max_drawdown', 'N/A') * 100:.2f}%")
+        print(f"  Total PnL: ${stats.get('total_pnl', 0):,.2f}")
+        print(f"  Win Rate: {stats.get('win_rate', 0) * 100:.2f}%")
+        print(f"  Total Trades: {stats.get('total_trades', 0)}")
+        print("-" * 35 + "\n")
     return results
 
 if __name__ == "__main__":

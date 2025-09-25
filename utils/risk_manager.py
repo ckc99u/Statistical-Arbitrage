@@ -34,16 +34,12 @@ class RiskManager:
     
     def check_risk_limits(self, pair_name: str, position_size: float) -> bool:
         """Check if position passes risk limits"""
-        # Portfolio exposure limit
-        total_exposure = sum(abs(pos['size']) for pos in self.position_tracker.values())
-        if total_exposure + abs(position_size) > self.config.max_portfolio_exposure * self.portfolio_value:
+        total_exposure = sum(abs(p["size"]) * p["entry_price1"] for p in self.position_tracker.values())
+        if total_exposure > self.config.max_portfolio_exposure * self.portfolio_value:
             return False
-        
-        # Maximum leverage check
-        leverage = (total_exposure + abs(position_size)) / self.portfolio_value
+        leverage = total_exposure / self.portfolio_value
         if leverage > self.config.max_leverage:
             return False
-        
         return True
     
     def calculate_transaction_costs(self, position_size: float) -> float:
@@ -54,7 +50,7 @@ class RiskManager:
     
     def update_position(self, pair_name: str, signal: str, position_size: float, 
                        prices: Dict) -> Dict:
-        """Update position tracking"""
+
         if pair_name not in self.position_tracker:
             self.position_tracker[pair_name] = {
                 'size': 0.0,
@@ -73,14 +69,28 @@ class RiskManager:
             position['entry_price2'] = prices['price2']
             position['entry_time'] = pd.Timestamp.now()
         
-        elif signal == 'CLOSE_POSITION':
-            # Close position
-            realized_pnl = self._calculate_realized_pnl(position, prices)
-            position['size'] = 0.0
-            return {'realized_pnl': realized_pnl}
+        if signal == CLOSE_POSITION or self._stop_loss_hit(position, prices):
+            pnl = self.calculate_realized_pnl(position, prices)
+            positionsize = 0.0
+            return {'realized_pnl': pnl}
         
         return {'realized_pnl': 0.0}
-    
+
+    def _stop_loss_hit(self, position: Dict, prices: Dict) -> bool:
+        # Hard stop at 2% adverse move from entry
+        entry_spread = position["entry_price1"] - position["entry_price2"]
+        current_spread = prices["price1"] - prices["price2"]
+        drawdown = abs((current_spread - entry_spread) / entry_spread)
+        return drawdown >= self.config.stop_loss_pct
+        # spread_change_pct = (current_spread - entry_spread) / entry_spread
+        # hist = self.config.historical_spreads.get(position["pair"], [])
+        # recent_vol = np.std(hist[-20:]) if len(hist) >= 20 else 0.01
+        # adaptive_stop = max(self.config.stop_loss_pct, 3 * recent_vol)
+        # if abs(spread_change_pct) >= adaptive_stop:
+        #     return True
+        # daily_loss = sum(self.daily_pnl[-1:]) if self.daily_pnl else 0.0
+        # return daily_loss <= -self.config.daily_drawdown_limit
+
     def _calculate_realized_pnl(self, position: Dict, current_prices: Dict) -> float:
         """Calculate realized P&L when closing position"""
         if position['size'] == 0:
