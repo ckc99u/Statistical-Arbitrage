@@ -10,9 +10,9 @@ from pathlib import Path
 @dataclass
 class DataConfig:
     universe: List[str] = field(default_factory=lambda: ['SPY', 'QQQ', 'GLD', 'SLV', 'USO', 'TLT', # Broad ETFs
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META',] # Tech
-        # 'JPM', 'GS', 'BAC', 'WFC', # Financials
-        # 'XLE', 'XOM', 'CVX'] # Energy
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', # Tech
+        'JPM', 'GS', 'BAC', 'WFC', # Financials
+        'XLE', 'XOM', 'CVX'] # Energy
         )
     start_date: str = '2019-01-01'
     end_date: str = '2024-01-01'

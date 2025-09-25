@@ -46,8 +46,7 @@ class Backtest:
             if symbol1 not in train_data.columns or symbol2 not in train_data.columns:
                 continue
             
-            signal_generator.reset_state()
-            training_success = signal_generator.train_lstm(train_data, symbol1, symbol2)
+            training_success = signal_generator.train_models(train_data, symbol1, symbol2)
             
             pair_copy = pair.copy()
             pair_copy['lstm_trained'] = training_success
@@ -78,8 +77,8 @@ class Backtest:
                 if pd.isna(price1) or pd.isna(price2) or price1 <= 0 or price2 <= 0:
                     continue
                 
-                signal_generator.reset_state()
-                signal_data = signal_generator.generate_signals(price1, price2, date)
+                hedge_ratio = pair.get('hedge_ratio', 1.0)
+                signal_data = signal_generator.generate_signals(pair_name, price1, price2, hedge_ratio)
                 signal = signal_data['signal']
                 
                 if signal in ['LONG_SPREAD', 'SHORT_SPREAD']:
@@ -95,7 +94,7 @@ class Backtest:
                                 'entry_date': date,
                                 'entry_price1': price1,
                                 'entry_price2': price2,
-                                'hedge_ratio': signal_data.get('hedge_ratio', 1.0)
+                                'hedge_ratio': hedge_ratio
                             }
                             
                             transaction_cost = risk_manager.calculate_transaction_costs(position_size)

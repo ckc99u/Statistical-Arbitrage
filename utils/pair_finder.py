@@ -49,12 +49,10 @@ class PairsFinder:
 
         if abs(correlation) < self.config.min_correlation:
             return None
-        
-        coint_stat, p_value, critical_values = coint(price1, price2)
+        log_price1 = np.log(price1)
+        log_price2 = np.log(price2) 
+        coint_stat, p_value, critical_values = coint(log_price1, log_price2)
         is_cointegrated = p_value < self.config.cointegration_threshold
-        print(symbol1, symbol2)
-        #print(p_value)
-
         if not is_cointegrated:
             return None
         
@@ -64,13 +62,10 @@ class PairsFinder:
         hedge_ratio = reg.coef_[0]
         
         raw_spread = price1 - hedge_ratio * price2
-        # spread_mean = spread.mean()
-        # spread_std = spread.std()
         normalized_spread = raw_spread / price1  # or use geometric mean of both prices
         spread_std = normalized_spread.std()
         if spread_std < self.config.min_spread_std or spread_std > self.config.max_spread_std:
             return None
-        print(spread_std)
         half_life = self._calculate_half_life(raw_spread)
         sharpe_ratio = self._calculate_spread_sharpe(raw_spread)
         volatility_ratio = ret1.std() / ret2.std() if ret2.std() > 0 else 0
@@ -82,7 +77,7 @@ class PairsFinder:
             'correlation': correlation,
             'cointegration_pvalue': p_value,
             'hedge_ratio': hedge_ratio,
-            'spread_mean': 0,
+            'spread_mean': float(raw_spread.mean()),
             'spread_std': spread_std,
             'half_life': half_life,
             'sharpe_ratio': sharpe_ratio,
@@ -122,7 +117,7 @@ class PairsFinder:
         if beta >= 1 or beta <= 0:
             return np.inf
         
-        half_life = -np.log(2) / np.log(beta)
+        half_life = -np.log(2) / (beta - 1)
         return half_life
 
     def _calculate_spread_sharpe(self, spread: pd.Series) -> float:
