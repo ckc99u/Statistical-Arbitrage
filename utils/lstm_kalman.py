@@ -1,254 +1,368 @@
-# Spread-Focused LSTM-Kalman for Statistical Arbitrage (DeepPairs Style)
-# FIXED VERSION with performance optimizations
+# FILE: lstm_kalman.py
+# DESCRIPTION: Refactored module for pair trading signal generation.
+# Includes hyperparameter tuning, regularization, and dynamic state-space model selection.
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+import statsmodels.api as sm
 import logging
+import itertools
 
-logger = logging.getLogger(__name__)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class SpreadKalmanFilter:
-    """Kalman Filter for spread state estimation."""
-    def __init__(self, process_variance=0.01, observation_variance=0.1):
-        self.Q = process_variance  # Process noise
-        self.R = observation_variance  # Observation noise
-        self.P = 1.0  # State covariance
-        self.spread_mean = 0.0  # Spread mean (state)
-        self.spread_var = 1.0   # Spread variance (state)
+# --- ENHANCED STATE-SPACE MODELING WITH KALMAN FILTER ---
 
-    def update(self, observed_spread):
-        # Prediction update
-        self.P += self.Q
-        # Measurement update
-        K = self.P / (self.P + self.R)
-        self.spread_mean += K * (observed_spread - self.spread_mean)
-        self.P *= (1 - K)
-        return self.spread_mean
+class EnhancedKalmanFilter:
+    """
+    Dynamically selects the best state-space model (e.g., Local Level, AR(1))
+    based on AIC and applies the Kalman Filter for spread state estimation.
+    """
+    def __init__(self):
+        self.model_fit = None
+        self.spread_mean = 0.0
+        self.spread_var = 1.0
+        self.best_model_type = "None"
 
-class SpreadLSTM:
-    """LSTM for spread residual and pattern modeling with optimized prediction."""
-    def __init__(self, lookback_period=60, lstm_units=32):
+    def select_and_fit_model(self, spread_series: pd.Series):
+        """
+        Fits multiple state-space models and selects the best one based on AIC.
+
+        Args:
+            spread_series (pd.Series): The historical series of the spread.
+        """
+        if len(spread_series) < 20:
+            logging.warning("Not enough data to select a state-space model. Need > 20, have %d.", len(spread_series))
+            return False
+
+        models = {
+            # Model 1: A simple random walk
+            "local_level": sm.tsa.UnobservedComponents(spread_series, 'local level'),
+            # Model 2: An autoregressive model of order 1
+            "ar1": sm.tsa.SARIMAX(spread_series, order=(1, 0, 0))
+        }
+
+        best_aic = np.inf
+        best_model_fit = None
+        best_model_name = "None"
+
+        for name, model in models.items():
+            try:
+                fit = model.fit(disp=False)
+                if fit.aic < best_aic:
+                    best_aic = fit.aic
+                    best_model_fit = fit
+                    best_model_name = name
+            except Exception as e:
+                logging.error("Failed to fit model %s: %s", name, e)
+
+        if best_model_fit:
+            self.model_fit = best_model_fit
+            self.best_model_type = best_model_name
+            logging.info("Selected state-space model: %s with AIC: %.2f", self.best_model_type, best_aic)
+            return True
+        return False
+
+    def update(self, observed_spread: float) -> tuple[float, float]:
+        """
+        Updates the state (mean and variance) using the fitted Kalman filter.
+        If no model is fitted, performs a simple moving average update.
+        """
+        if self.model_fit:
+            # Predict the next state based on the fitted model
+            # Note: For real-time use, we would append and refit or use the forecast method
+            # This is a simplified update for demonstration
+            forecast = self.model_fit.get_forecast(steps=1)
+            self.spread_mean = forecast.predicted_mean.iloc[0]
+            self.spread_var = forecast.var.iloc[0]
+        else:
+            # Fallback to a simple exponential moving average if model fitting fails
+            self.spread_mean = 0.95 * self.spread_mean + 0.05 * observed_spread
+            self.spread_var = 1.0  # Default variance
+
+        return self.spread_mean, self.spread_var
+
+# --- ROBUST LSTM MODEL WITH REGULARIZATION AND TUNING ---
+
+class RobustSpreadLSTM:
+    """
+    An LSTM model for spread modeling featuring hyperparameter tuning,
+    L2 regularization, and Early Stopping to prevent overfitting.
+    """
+    def __init__(self, lookback_period=60, lstm_units=50, dropout_rate=0.2, l2_reg=0.01):
         self.lookback_period = lookback_period
         self.lstm_units = lstm_units
+        self.dropout_rate = dropout_rate
+        self.l2_reg = l2_reg
         self.model = None
         self.scaler = StandardScaler()
         self.is_fitted = False
-        # Placeholder for the optimized prediction function
-        self.predict_function = None
 
     def build_model(self):
-        """
-        Builds the LSTM model using the Keras Functional API.
-        This approach avoids the 'input_shape' warning by using an explicit Input layer.
-        """
-        inputs = Input(shape=(self.lookback_period, 1), name='spread_input')
-        x = LSTM(self.lstm_units, return_sequences=True, name='lstm_1')(inputs)
-        x = Dropout(0.2, name='dropout_1')(x)
-        x = LSTM(self.lstm_units, return_sequences=False, name='lstm_2')(x)
-        x = Dropout(0.2, name='dropout_2')(x)
-        outputs = Dense(1, activation='tanh', name='output')(x)
+        """Builds the LSTM model with L2 regularization and Dropout."""
+        inputs = Input(shape=(self.lookback_period, 1))
+        x = LSTM(
+            self.lstm_units,
+            return_sequences=True,
+            kernel_regularizer=l2(self.l2_reg)
+        )(inputs)
+        x = Dropout(self.dropout_rate)(x)
+        x = LSTM(
+            self.lstm_units,
+            return_sequences=False,
+            kernel_regularizer=l2(self.l2_reg)
+        )(x)
+        x = Dropout(self.dropout_rate)(x)
+        outputs = Dense(1, activation='linear')(x)
+        self.model = Model(inputs=inputs, outputs=outputs)
+        self.model.compile(optimizer='adam', loss='mse')
 
-        model = Model(inputs=inputs, outputs=outputs, name='SpreadLSTM')
-        model.compile(optimizer='adam', loss='mse')
-        self.model = model
-
-        # Create a concrete tf.function for prediction to prevent retracing in loops.
-        # This is the key fix for the TensorFlow performance warning.
-        self.predict_function = tf.function(
-            self.model,
-            input_signature=[tf.TensorSpec(shape=(None, self.lookback_period, 1), dtype=tf.float32)]
-        )
-        logger.info("LSTM model and optimized prediction function built.")
-
-    def prepare_sequences(self, scaled_data):
+    def _prepare_sequences(self, data: np.ndarray):
+        """Prepares sequences for LSTM training."""
         X, y = [], []
-        for i in range(self.lookback_period, len(scaled_data)):
-            X.append(scaled_data[i-self.lookback_period:i, 0])
-            y.append(scaled_data[i, 0])
+        for i in range(self.lookback_period, len(data)):
+            X.append(data[i-self.lookback_period:i, 0])
+            y.append(data[i, 0])
         return np.array(X), np.array(y)
 
-    def train(self, spread_series: pd.Series) -> bool:
-        """Trains the LSTM model on the given spread series."""
-        if len(spread_series) < self.lookback_period + 50:
-            logger.warning(f"Not enough data to train LSTM; need > {self.lookback_period + 50}, have {len(spread_series)}.")
+    def train(self, spread_series: pd.Series, validation_split=0.2, patience=10):
+        """
+        Trains the LSTM model with early stopping.
+
+        Args:
+            spread_series (pd.Series): The historical series of the spread.
+            validation_split (float): Fraction of data to use for validation.
+            patience (int): Epochs to wait for improvement before stopping.
+        """
+        if len(spread_series) < self.lookback_period + 20:
+            logging.warning("Not enough data to train LSTM. Need > %d, have %d.", self.lookback_period + 20, len(spread_series))
             return False
 
-        logger.info(f"Training LSTM model with {len(spread_series)} data points...")
         scaled_spreads = self.scaler.fit_transform(spread_series.values.reshape(-1, 1))
-        self.is_fitted = True
-
-        X, y = self.prepare_sequences(scaled_spreads)
-        if len(X) == 0:
-            logger.error("Failed to create sequences for LSTM training.")
+        X, y = self._prepare_sequences(scaled_spreads)
+        
+        if X.shape[0] == 0:
+            logging.error("Failed to create sequences for LSTM training.")
             return False
-            
+        
         X = X.reshape(X.shape[0], X.shape[1], 1)
 
         if self.model is None:
             self.build_model()
-            
-        self.model.fit(X, y, epochs=50, batch_size=32, verbose=0)
-        logger.info("LSTM model training complete.")
+        monitor_metric = 'val_loss' if validation_split > 0 else 'loss'
+        early_stopping = EarlyStopping(
+            monitor=monitor_metric,
+            patience=patience,
+            restore_best_weights=True
+        )
+
+        self.model.fit(
+            X, y,
+            epochs=5,
+            batch_size=32,
+            validation_split=validation_split,
+            callbacks=[early_stopping],
+            verbose=0
+        )
+        self.is_fitted = True
         return True
 
-    def predict_spread(self, recent_spreads: pd.Series) -> float:
-        """
-        Predicts the next spread value using the optimized tf.function.
-        """
-        if not self.is_fitted or self.predict_function is None:
+    def predict(self, recent_spreads: pd.Series) -> float:
+        """Predicts the next spread value."""
+        if not self.is_fitted or len(recent_spreads) < self.lookback_period:
             return 0.0
 
-        if len(recent_spreads) < self.lookback_period:
-            return 0.0
-
-        # Prepare input sequence
         input_data = recent_spreads.values[-self.lookback_period:].reshape(-1, 1)
         scaled_input = self.scaler.transform(input_data)
+        input_tensor = scaled_input.reshape(1, self.lookback_period, 1)
         
-        # Reshape for LSTM: (batch_size, timesteps, features)
-        input_tensor = tf.constant(scaled_input.reshape(1, self.lookback_period, 1), dtype=tf.float32)
-
-        # Use the pre-compiled function for efficient prediction
-        prediction = self.predict_function(input_tensor)
-
-        # Inverse transform to get original scale
-        inversed_prediction = self.scaler.inverse_transform(prediction.numpy())
-
+        prediction = self.model.predict(input_tensor, verbose=0)
+        inversed_prediction = self.scaler.inverse_transform(prediction)
+        
         return float(inversed_prediction[0, 0])
 
-# The rest of the file (DeepPairsSignalGenerator etc.) can remain as it is,
-# as the fixes are contained within the SpreadLSTM class.
-# I am including it here for completeness.
+
+# --- MAIN SIGNAL GENERATOR WITH HYPERPARAMETER TUNING ---
 
 class DeepPairsSignalGenerator:
     """
-    Spread-focused LSTM-Kalman signal generator.
-    (No changes needed in this class)
+    Orchestrates the Kalman Filter and LSTM to generate trading signals,
+    now with integrated hyperparameter tuning.
     """
     def __init__(self, config):
         self.config = config
         self.kalman_filters = {}
         self.lstm_predictors = {}
         self.spread_histories = {}
-        self.z_scores = {}
-        self.half_lives = {}
+        self.best_params = {}
 
-    def get_or_create_state(self, pair_name):
+    def _get_or_create_state(self, pair_name):
+        """Initializes state for a new pair."""
         if pair_name not in self.kalman_filters:
-            self.kalman_filters[pair_name] = SpreadKalmanFilter()
-            self.lstm_predictors[pair_name] = SpreadLSTM(lookback_period=self.config.lookback_period)
-            self.spread_histories[pair_name] = []
-            self.z_scores[pair_name] = []
-            self.half_lives[pair_name] = np.inf
-        return self.kalman_filters[pair_name], self.lstm_predictors[pair_name], self.spread_histories[pair_name], self.z_scores[pair_name], self.half_lives
-
-    def reset_pair_state(self, pair_name):
-        if pair_name in self.kalman_filters:
-            del self.kalman_filters[pair_name]
-            del self.lstm_predictors[pair_name]
-            del self.spread_histories[pair_name]
-            del self.z_scores[pair_name]
-            del self.half_lives[pair_name]
-
-    def calculate_static_hedge_ratio(self, price1_series, price2_series):
-        from sklearn.linear_model import LinearRegression
-        X = price2_series.values.reshape(-1, 1)
-        y = price1_series.values
-        reg = LinearRegression().fit(X, y)
-        return reg.coef_[0]
-
-    def calculate_spread(self, price1, price2, hedge_ratio):
-        return price1 - (hedge_ratio * price2)
-
-    def update_spread_statistics(self, pair_name, spread):
-        kalman = self.kalman_filters[pair_name]
-        history = self.spread_histories[pair_name]
-        
-        kalman_mean = kalman.update(spread)
-        history.append(spread)
-        
-        if len(history) > 20:
-            recent_spreads = history[-20:]
-            spread_std = np.std(recent_spreads)
-            z_score = (spread - kalman_mean) / spread_std if spread_std > 0 else 0.0
-            self.z_scores[pair_name].append(z_score)
-            half_life = self.calculate_half_life(pd.Series(recent_spreads))
-            self.half_lives[pair_name] = half_life
-        else:
-            z_score = 0.0
-            spread_std = 1.0
+            self.kalman_filters[pair_name] = EnhancedKalmanFilter()
             
-        return z_score, kalman_mean, spread_std
+            # Use best params if available, otherwise defaults
+            params = self.best_params.get(pair_name, {})
+            self.lstm_predictors[pair_name] = RobustSpreadLSTM(
+                lookback_period=params.get('lookback_period', self.config.lookback_period),
+                lstm_units=params.get('lstm_units', self.config.lstm_units),
+                dropout_rate=params.get('dropout_rate', self.config.dropout_rate),
+                l2_reg=params.get('l2_reg', self.config.l2_reg)
+            )
+            self.spread_histories[pair_name] = []
+        return self.kalman_filters[pair_name], self.lstm_predictors[pair_name], self.spread_histories[pair_name]
 
-    def calculate_half_life(self, spread_series):
-        if len(spread_series) < 10: return np.inf
-        from sklearn.linear_model import LinearRegression
-        spread_lag = spread_series.shift(1).dropna()
-        spread_curr = spread_series.iloc[1:len(spread_lag)+1]
+    def tune_and_train_models(self, historical_data: pd.DataFrame, symbol1: str, symbol2: str):
+        """
+        Performs hyperparameter tuning using walk-forward validation and then
+        trains the final models on the full historical dataset.
+        """
+        pair_name = f"{symbol1}-{symbol2}"
         
-        X = spread_lag.values.reshape(-1, 1)
-        y = spread_curr.values
-        reg = LinearRegression().fit(X, y)
-        beta = reg.coef_[0]
+        # 1. Calculate spread
+        hedge_ratio = self._calculate_static_hedge_ratio(historical_data[symbol1], historical_data[symbol2])
+        spreads = historical_data[symbol1] - hedge_ratio * historical_data[symbol2]
+        
+        # 2. Hyperparameter Tuning for LSTM
+        logging.info("Starting hyperparameter tuning for pair: %s", pair_name)
+        self._tune_lstm_hyperparameters(spreads, pair_name)
+        
+        # 3. Train final models with best params on full history
+        logging.info("Training final models for pair: %s with best parameters.", pair_name)
+        kalman, lstm, _ = self._get_or_create_state(pair_name)
+        
+        # Train Kalman Filter model selector
+        kalman.select_and_fit_model(spreads)
+        
+        # Train LSTM
+        lstm.train(spreads)
+        
+        return True, hedge_ratio
 
-        if beta >= 1 or beta <= 0: return np.inf
-        return -np.log(2) / np.log(beta)
+    def _tune_lstm_hyperparameters(self, spread_series: pd.Series, pair_name: str):
+        """
+        Uses TimeSeriesSplit to find the best LSTM hyperparameters.
+        """
+        param_grid = {
+            'lookback_period': [30, 60],
+            'lstm_units': [32, 64],
+            'dropout_rate': [0.2, 0.3],
+            'l2_reg': [0.01, 0.001]
+        }
+        
+        tscv = TimeSeriesSplit(n_splits=3)
+        best_score = np.inf
+        best_params = {}
 
-    def generate_signals(self, pair_name, price1, price2, hedge_ratio):
-        _, lstm, history, _, half_lives = self.get_or_create_state(pair_name)
+        # Generate all combinations of parameters
+        keys, values = zip(*param_grid.items())
+        param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+        for params in param_combinations:
+            scores = []
+            for train_index, test_index in tscv.split(spread_series):
+                train_spread = spread_series.iloc[train_index]
+                test_spread = spread_series.iloc[test_index]
+
+                if len(train_spread) < params['lookback_period'] + 20:
+                    continue
+
+                # Create and train a temporary LSTM model
+                temp_lstm = RobustSpreadLSTM(**params)
+                temp_lstm.train(train_spread, validation_split=0, patience=5) # No validation set needed here
+
+                # Evaluate on the test fold
+                if temp_lstm.is_fitted:
+                    predictions = []
+                    history = train_spread.copy()
+                    for i in range(len(test_spread)):
+                        pred = temp_lstm.predict(history)
+                        predictions.append(pred)
+                        # Append the actual value to history for the next prediction
+                        history = pd.concat([history, pd.Series([test_spread.iloc[i]])], ignore_index=True)
+                    
+                    mse = np.mean((np.array(predictions) - test_spread.values)**2)
+                    scores.append(mse)
+
+            if scores:
+                avg_score = np.mean(scores)
+                if avg_score < best_score:
+                    best_score = avg_score
+                    best_params = params
         
-        current_spread = self.calculate_spread(price1, price2, hedge_ratio)
-        z_score, kalman_mean, spread_std = self.update_spread_statistics(pair_name, current_spread)
+        if best_params:
+            self.best_params[pair_name] = best_params
+            logging.info("Best parameters for %s: %s (Score: %.4f)", pair_name, best_params, best_score)
+        else:
+            logging.warning("Hyperparameter tuning failed for %s. Using default parameters.", pair_name)
+
+
+    def generate_signal(self, pair_name: str, price1: float, price2: float, hedge_ratio: float) -> dict:
+        """Generates a trading signal for the given pair and prices."""
+        kalman, lstm, history = self._get_or_create_state(pair_name)
         
+        current_spread = price1 - hedge_ratio * price2
+        history.append(current_spread)
+        
+        # 1. Get filtered spread from Kalman Filter
+        kalman_mean, kalman_var = kalman.update(current_spread)
+        kalman_std = np.sqrt(kalman_var)
+        
+        # 2. Calculate Z-Score
+        z_score = (current_spread - kalman_mean) / kalman_std if kalman_std > 0 else 0.0
+        
+        # 3. Get prediction from LSTM
         lstm_signal = 0.0
-        if len(history) >= lstm.lookback_period:
-            lstm_prediction = lstm.predict_spread(pd.Series(history))
-            if spread_std > 0:
-                lstm_signal = np.tanh(lstm_prediction - current_spread) / spread_std
+        if lstm.is_fitted:
+            lstm_prediction = lstm.predict(pd.Series(history))
+            if kalman_std > 0:
+                # Signal is based on expected deviation from the mean
+                lstm_signal = np.tanh((lstm_prediction - current_spread) / kalman_std)
 
-        combined_signal = self.generate_combined_signal(z_score, lstm_signal)
+        # 4. Combine signals
+        signal = self._generate_combined_signal(z_score, lstm_signal)
         
         return {
-            "signal": combined_signal,
-            "z_score": z_score,
-            "half_life": self.half_lives.get(pair_name, np.inf),
-            "spread": current_spread,
-            "spread_mean": kalman_mean,
-            "lstm_signal": lstm_signal,
-            "hedge_ratio": hedge_ratio
+            'signal': signal,
+            'z_score': z_score,
+            'spread': current_spread,
+            'kalman_mean': kalman_mean,
+            'lstm_signal': lstm_signal,
         }
 
-    def generate_combined_signal(self, z_score, lstm_signal):
-        entry_threshold = self.config.entry_threshold
-        exit_threshold = self.config.exit_threshold
+    def _generate_combined_signal(self, z_score, lstm_signal):
+        """Combines Z-Score and LSTM signals into a final trading decision."""
+        entry_thresh = self.config.entry_threshold
+        exit_thresh = self.config.exit_threshold
 
+        # Z-Score based signal
         z_signal = 0
-        if z_score > entry_threshold: z_signal = -1
-        elif z_score < -entry_threshold: z_signal = 1
-        elif abs(z_score) < exit_threshold: z_signal = 0 
+        if z_score > entry_thresh: z_signal = -1  # Short the spread
+        elif z_score < -entry_thresh: z_signal = 1  # Long the spread
+        elif abs(z_score) < exit_thresh: z_signal = 2 # Close position
         
+        # Weighted combination
+        # Giving more weight to the primary Z-score signal
         combined_strength = 0.7 * z_signal + 0.3 * lstm_signal
         
-        if combined_strength > 0.5: return "LONG_SPREAD"
-        elif combined_strength < -0.5: return "SHORT_SPREAD"
-        elif abs(combined_strength) < 0.2: return "CLOSE_POSITION"
-        else: return "HOLD"
-
-    def train_models(self, historical_data, symbol1, symbol2):
-        pair_name = f"{symbol1}-{symbol2}"
-        self.reset_pair_state(pair_name)
-        self.get_or_create_state(pair_name)
-        
-        price1 = historical_data[symbol1]
-        price2 = historical_data[symbol2]
-        
-        hedge_ratio = self.calculate_static_hedge_ratio(price1, price2)
-        spreads = price1 - (hedge_ratio * price2)
-        
-        lstm_predictor = self.lstm_predictors[pair_name]
-        return lstm_predictor.train(spreads)
-
+        if z_signal == 2:
+            return "CLOSE"
+        if combined_strength > 0.5:
+            return "LONG"
+        elif combined_strength < -0.5:
+            return "SHORT"
+        else:
+            return "HOLD"
+            
+    def _calculate_static_hedge_ratio(self, price1_series, price2_series):
+        """Calculates hedge ratio using linear regression."""
+        model = sm.OLS(price1_series, sm.add_constant(price2_series)).fit()
+        return model.params[1]

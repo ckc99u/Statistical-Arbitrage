@@ -48,16 +48,24 @@ class Backtest:
         for i, pair in enumerate(pairs):
             symbol1 = pair['symbol1']
             symbol2 = pair['symbol2']
-            
+            logger.info(f"--- Training models for pair {i+1}/{len(pairs)}: {symbol1}-{symbol2} ---")
+
             if symbol1 not in train_data.columns or symbol2 not in train_data.columns:
+                logger.warning(f"Skipping pair {symbol1}-{symbol2}: Data not available in training set.")
                 continue
+
+            # **NEW:** Call the tuning and training method, which now returns the hedge ratio
+            training_success, hedge_ratio = signal_generator.tune_and_train_models(train_data, symbol1, symbol2)
             
-            training_success = signal_generator.train_models(train_data, symbol1, symbol2)
-            
-            pair_copy = pair.copy()
-            pair_copy['lstm_trained'] = training_success
-            trained_pairs.append(pair_copy)
-        
+            if training_success:
+                pair_copy = pair.copy()
+                # **NEW:** Store the calculated hedge ratio for the testing phase
+                pair_copy['hedge_ratio'] = hedge_ratio
+                trained_pairs.append(pair_copy)
+                logger.info(f"Successfully trained models for {symbol1}-{symbol2} with hedge ratio: {hedge_ratio:.4f}")
+            else:
+                logger.error(f"Failed to train models for {symbol1}-{symbol2}.")
+                
         return trained_pairs
 
     def _run_out_of_sample_test(self, test_data: pd.DataFrame, pairs: List[Dict], signal_generator, risk_manager) -> pd.DataFrame:

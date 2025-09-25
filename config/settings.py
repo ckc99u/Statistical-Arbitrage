@@ -28,10 +28,11 @@ class DataConfig:
 class PairsConfig:
     min_correlation: float = 0.6  # Lowered from 0.7
     max_correlation: float = 0.98
-    cointegration_threshold: float = 0.10 # Increased from 0.05
+    cointegration_threshold: float = 0.05
     min_spread_std: float = 0.005
     max_spread_std: float = 0.25
     min_observations: int = 100
+    coint_significance_level: float = 0.05
     exclude_pairs: List[str] = field(default_factory=list)
 
 @dataclass
@@ -50,6 +51,7 @@ class ModelConfig:
     entry_threshold: float = 2.0
     exit_threshold: float = 0.5
     stop_loss_threshold: float = -3.0
+    l2_reg: float = 0.01
 
 @dataclass
 class RiskConfig:
