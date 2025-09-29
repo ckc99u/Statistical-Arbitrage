@@ -1,287 +1,228 @@
+# backtest.py
+
 """
-Backtesting Engine with Performance Analytics
+
+Backtesting Engine with Performance Analytics.
+
+MODIFIED to support dynamic, time-varying hedge ratios and enhanced risk management.
+
 """
+
 import pandas as pd
+
 import numpy as np
+
 from typing import Dict, List, Tuple
+
 import logging
+
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
 class Backtest:
+
     def __init__(self, config):
+
         self.config = config
         self.results = []
         self.trades = []
         self.initial_capital = getattr(config, 'initial_capital', 50000)
 
-    def run_backtest(self, data: pd.DataFrame, pairs: list, signal_generator, risk_manager) -> dict:
+    def run_backtest(self, data, pairs, signal_generator, risk_manager):
         if data.empty or not pairs:
-            return {'overall_performance': {}, 'pair_performance': {}, 'daily_results': pd.DataFrame(), 'trade_log': []}
-
-        train_data, test_data = self._split_data(data)
+            return {}, {}
         
-        trained_pairs = self._train_models(train_data, pairs, signal_generator)
-        results_df = self._run_out_of_sample_test(test_data, trained_pairs, signal_generator, risk_manager)
-        overall_performance = self._calculate_performance_metrics(results_df)
-        pair_performance = self._calculate_per_pair_metrics(self.trades, test_data.index)
+        traindata, testdata = self.split_data(data)
+        pair_performance = {}
         
-        return {
-            'overall_performance': overall_performance,
-            'pair_performance': pair_performance,
-            'daily_results': results_df,
-            'trade_log': self.trades
-        }
+        for p in pairs:
+            symbol1 = p['symbol1']
+            symbol2 = p['symbol2']
+            self.trades = []
+            pair_name = f"{symbol1}-{symbol2}"
+            print(pair_name)
+            price1_train = traindata[symbol1].dropna()
+            price2_train = traindata[symbol2].dropna()
+            success = signal_generator.fit(price1_train, price2_train)
+            if not success:
+                continue
+            _ = self.run_out_of_sample_test(
+                testdata, symbol1, symbol2, signal_generator, risk_manager
+            )
+
+            perf = self.calculate_per_pair_metrics(self.trades, testdata.index).get(pair_name, {})
+            pair_performance[pair_name] = perf
+            risk_manager.reset()
+
+        return pair_performance
 
 
-    def _split_data(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def split_data(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         test_start_date = pd.to_datetime(self.config.test_start_date)
         data.index = pd.to_datetime(data.index)
-
         train_data = data[data.index < test_start_date].copy()
         test_data = data[data.index >= test_start_date].copy()
+
         return train_data, test_data
 
-    def _train_models(self, train_data: pd.DataFrame, pairs: List[Dict], signal_generator) -> List[Dict]:
+    def train_models(self, train_data: pd.DataFrame, pairs: List[Dict], signal_generator) -> List[Dict]:
         trained_pairs = []
         for i, pair in enumerate(pairs):
             symbol1 = pair['symbol1']
             symbol2 = pair['symbol2']
             logger.info(f"--- Training models for pair {i+1}/{len(pairs)}: {symbol1}-{symbol2} ---")
-
             if symbol1 not in train_data.columns or symbol2 not in train_data.columns:
                 logger.warning(f"Skipping pair {symbol1}-{symbol2}: Data not available in training set.")
                 continue
 
-            # **NEW:** Call the tuning and training method, which now returns the hedge ratio
-            training_success, hedge_ratio = signal_generator.tune_and_train_models(train_data, symbol1, symbol2)
-            
+            price1_train = train_data[symbol1].dropna()
+            price2_train = train_data[symbol2].dropna()
+            training_success = signal_generator.fit(price1_train, price2_train)
             if training_success:
                 pair_copy = pair.copy()
-                # **NEW:** Store the calculated hedge ratio for the testing phase
-                pair_copy['hedge_ratio'] = hedge_ratio
                 trained_pairs.append(pair_copy)
-                logger.info(f"Successfully trained models for {symbol1}-{symbol2} with hedge ratio: {hedge_ratio:.4f}")
+                logger.info(f"Successfully trained models for {symbol1}-{symbol2}")
             else:
                 logger.error(f"Failed to train models for {symbol1}-{symbol2}.")
-                
+
         return trained_pairs
 
-    def _run_out_of_sample_test(self, test_data: pd.DataFrame, pairs: List[Dict], signal_generator, risk_manager) -> pd.DataFrame:
+
+    def run_out_of_sample_test(self, test_data: pd.DataFrame, symbol1, symbol2, signal_generator, risk_manager) -> pd.DataFrame:
         results = []
         portfolio_value = self.initial_capital
-        active_positions = {}
-        
-        for date_idx, (date, row) in enumerate(test_data.iterrows()):
+        for date, row in test_data.iterrows():
             daily_pnl = 0.0
             daily_trades = []
-            
-            for pair in pairs:
-                symbol1 = pair['symbol1']
-                symbol2 = pair['symbol2']
-                pair_name = f"{symbol1}-{symbol2}"
-                
-                if symbol1 not in row.index or symbol2 not in row.index:
-                    continue
-                
-                price1 = row[symbol1]
-                price2 = row[symbol2]
-                
-                if pd.isna(price1) or pd.isna(price2) or price1 <= 0 or price2 <= 0:
-                    continue
-                
-                hedge_ratio = pair.get('hedge_ratio', 1.0)
-                signal_data = signal_generator.generate_signals(pair_name, price1, price2, hedge_ratio)
-                signal = signal_data['signal']
-                
+            pair_name = f"{symbol1}-{symbol2}"
+            if symbol1 not in row.index or symbol2 not in row.index: 
+                continue
+            price1, price2 = row[symbol1], row[symbol2]
+            if pd.isna(price1) or pd.isna(price2) or price1 == 0 or price2 == 0: 
+                continue
+            signal_strength, hedge_ratio, volatility = signal_generator.generate_signal(price1, price2)
+            if True: ## maybe fo other risk check
+                # Map raw signal strength to trade decisions
+                if signal_strength > self.config.entry_threshold:
+                    signal = 'LONG_SPREAD'
+                elif signal_strength < -self.config.entry_threshold:
+                    signal = 'SHORT_SPREAD'
+                elif abs(signal_strength) < self.config.exit_threshold:
+                    signal = 'CLOSE_POSITION'
+                else:
+                    signal = 'HOLD'
+                current_prices = {'price1': price1, 'price2': price2}
                 if signal in ['LONG_SPREAD', 'SHORT_SPREAD']:
-                    if pair_name not in active_positions:
-                        volatility = self._estimate_pair_volatility(test_data, symbol1, symbol2, date_idx)
-                        signal_strength = abs(signal_data.get('z_score', 1.0))
-                        position_size = risk_manager.calculate_position_size(signal_strength, volatility, portfolio_value)
+                    
+                    # Check if we don't already have a position
+                    if pair_name not in risk_manager.position_tracker or risk_manager.position_tracker[pair_name]['size'] == 0:
                         
-                        if risk_manager.check_risk_limits(pair_name, position_size):
-                            active_positions[pair_name] = {
-                                'signal': signal,
-                                'size': position_size,
-                                'entry_date': date,
-                                'entry_price1': price1,
-                                'entry_price2': price2,
-                                'hedge_ratio': hedge_ratio
-                            }
+                        position_size = risk_manager.calculate_position_size(signal_strength, volatility, portfolio_value)
+                        if True:
+                            result = risk_manager.update_position(
+                                pair_name=pair_name,
+                                signal=signal,
+                                position_size=position_size,
+                                prices=current_prices,
+                                current_volatility=volatility
+                            )
+                            # Log the trade entry
+                            self.trades.append({
+                                'date': date, 'pair': pair_name, 'action': 'ENTRY', 'signal': signal,
+                                'size': position_size, 'price1': price1, 'price2': price2, 'pnl': 0.0,
+                                'hold_days': 0
+                            })
                             
                             transaction_cost = risk_manager.calculate_transaction_costs(position_size)
                             daily_pnl -= transaction_cost
-                
-                elif signal in ['CLOSE_POSITION', 'STOP_LOSS']:
-                    if pair_name in active_positions:
-                        position = active_positions[pair_name]
-                        trade_pnl = self._calculate_trade_pnl(position, price1, price2)
+
+                # Handle position exit or check for stop loss
+                elif signal == 'CLOSE_POSITION' or (pair_name in risk_manager.position_tracker and risk_manager.position_tracker[pair_name]['size'] != 0):
+                    # Update position (this will check for stop losses and trailing stops)
+                    result = risk_manager.update_position(
+                        pair_name=pair_name,
+                        signal=signal,
+                        position_size=0,  # Not used for closes
+                        prices=current_prices,
+                        current_volatility=volatility
+                    )
+                    
+                    # If position was closed (either by signal or stop loss)
+                    if result['realized_pnl'] != 0:
+                        trade_pnl = result['realized_pnl']
                         daily_pnl += trade_pnl
                         
-                        trade = {
-                            'date': date,
-                            'pair': pair_name,
-                            'action': 'EXIT',
-                            'signal': signal,
-                            'size': position['size'],
-                            'price1': price1,
-                            'price2': price2,
-                            'pnl': trade_pnl,
-                            'hold_days': (date - position['entry_date']).days
-                        }
+                        # Find the entry trade to calculate hold days
+                        entry_trade = None
+                        for trade in reversed(self.trades):
+                            if trade['pair'] == pair_name and trade['action'] == 'ENTRY':
+                                entry_trade = trade
+                                break
                         
-                        self.trades.append(trade)
-                        del active_positions[pair_name]
+                        hold_days = (date - entry_trade['date']).days if entry_trade else 0
                         
-                        transaction_cost = risk_manager.calculate_transaction_costs(position['size'])
+                        # Log the exit trade
+                        self.trades.append({
+                            'date': date, 'pair': pair_name, 'action': 'EXIT', 'signal': signal,
+                            'size': entry_trade['size'] if entry_trade else 0, 
+                            'price1': price1, 'price2': price2, 'pnl': trade_pnl,
+                            'hold_days': hold_days
+                        })
+                        
+                        transaction_cost = risk_manager.calculate_transaction_costs(entry_trade['size'] if entry_trade else 0)
                         daily_pnl -= transaction_cost
-            
+
             portfolio_value += daily_pnl
-            
+
             results.append({
-                'date': date,
-                'portfolio_value': portfolio_value,
-                'daily_pnl': daily_pnl,
-                'daily_return': daily_pnl / (portfolio_value - daily_pnl) if portfolio_value != daily_pnl else 0.0,
-                'active_positions': len(active_positions),
+                'date': date, 'portfolio_value': portfolio_value, 'daily_pnl': daily_pnl,
+                'daily_return': daily_pnl / (portfolio_value - daily_pnl) if (portfolio_value - daily_pnl) != 0 else 0.0,
+                'active_positions': len([p for p in risk_manager.position_tracker.values() if p['size'] != 0]),
                 'trades_count': len(daily_trades)
             })
+
         
         results_df = pd.DataFrame(results)
         results_df.set_index('date', inplace=True)
         return results_df
 
-    def _estimate_pair_volatility(self, data: pd.DataFrame, symbol1: str, symbol2: str, current_idx: int, window: int = 30) -> float:
-        start_idx = max(0, current_idx - window)
-        recent_data = data.iloc[start_idx:current_idx]
-        
-        if len(recent_data) < 10 or symbol1 not in recent_data.columns or symbol2 not in recent_data.columns:
-            return 0.1
-        
-        price1 = recent_data[symbol1].dropna()
-        price2 = recent_data[symbol2].dropna()
-        
-        if len(price1) < 5 or len(price2) < 5:
-            return 0.1
-        
-        spread = price1 - price2
-        spread_returns = spread.pct_change().dropna()
-        
-        if len(spread_returns) < 2:
-            return 0.1
-        
-        volatility = spread_returns.std() * np.sqrt(252)
-        return max(0.01, min(1.0, volatility))
+    def calculate_per_pair_metrics(self, trade_log: list, all_dates: pd.DatetimeIndex) -> dict:
 
-    def _calculate_trade_pnl(self, position: Dict, current_price1: float, current_price2: float) -> float:
-        entry_spread = position['entry_price1'] - position['hedge_ratio'] * position['entry_price2']
-        current_spread = current_price1 - position['hedge_ratio'] * current_price2
-        spread_change = current_spread - entry_spread
-        
-        if position['signal'] == 'LONG_SPREAD':
-            pnl = spread_change * abs(position['size'])
-        else:
-            pnl = -spread_change * abs(position['size'])
-        
-        return pnl
-    def _calculate_per_pair_metrics(self, trade_log: list, all_dates: pd.DatetimeIndex) -> dict:
-
-        if not trade_log:
+        if not trade_log: 
             return {}
 
-        # Group PnL by pair and date
         pnl_by_pair_date = defaultdict(lambda: defaultdict(float))
         for trade in trade_log:
-            pair = trade.get('pair')
-            date = trade.get('date')
-            pnl = trade.get('pnl', 0.0)
-            if pair and date:
-                pnl_by_pair_date[pair][date] += pnl
-        
+            print(trade)
+            if trade.get('pair') and trade.get('date') and trade['action'] == 'EXIT':
+                pnl_by_pair_date[trade['pair']][trade['date']] += trade.get('pnl', 0.0)
+
         pair_performance = {}
 
         for pair, date_pnl_map in pnl_by_pair_date.items():
-            # Create a daily PnL series for the pair, filling non-trade days with 0
             daily_pnl = pd.Series(date_pnl_map, name='pnl').reindex(all_dates, fill_value=0.0)
-            
-            # We don't need an initial capital assumption if we work with returns
-            # A small non-zero base is needed to avoid division by zero
-            # The choice of base doesn't affect Sharpe or Max DD
-            base_value = 100_000 
-            equity_curve = base_value + daily_pnl.cumsum()
-            
-            if equity_curve.empty:
+            equity_curve = self.initial_capital + daily_pnl.cumsum()
+
+            if equity_curve.empty or len(daily_pnl) < 2:
                 continue
 
-            # Calculate daily returns from the pair's equity curve
             daily_returns = equity_curve.pct_change().fillna(0)
-            
-            # Calculate Metrics
-            if len(daily_returns) < 2:
-                continue
-            
-            # Annualized Sharpe Ratio
-            mean_daily_return = daily_returns.mean()
-            std_daily_return = daily_returns.std()
-            sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252)
-            # Maximum Drawdown
+            mean_ret, std_ret = daily_returns.mean(), daily_returns.std()
+            sharpe = (mean_ret / std_ret) * np.sqrt(252) if std_ret > 0 else 0
+
             running_max = equity_curve.expanding().max()
             drawdown = (equity_curve - running_max) / running_max
-            max_drawdown = drawdown.min()
-            
-            # Basic metrics (from your existing implementation)
-            pnl_list = [pnl for date, pnl in date_pnl_map.items()]
-            winning_trades = [pnl for pnl in pnl_list if pnl > 0]
-            losing_trades = [pnl for pnl in pnl_list if pnl < 0]
+            max_dd = drawdown.min()
+
+            pnl_list = list(date_pnl_map.values())
+            wins = [p for p in pnl_list if p > 0]
+            losses = [p for p in pnl_list if p < 0]
 
             pair_performance[pair] = {
-                'total_pnl': sum(pnl_list),
-                'sharpe_ratio': round(sharpe_ratio, 3),
-                'max_drawdown': round(max_drawdown, 3),
-                'total_trades': len(pnl_list),
-                'win_rate': len(winning_trades) / len(pnl_list) if pnl_list else 0.0,
-                'profit_factor': abs(sum(winning_trades)) / abs(sum(losing_trades)) if losing_trades else float('inf')
+                'total_pnl': sum(pnl_list), 'sharpe_ratio': round(sharpe, 3), 'max_drawdown': round(max_dd, 3),
+                'total_trades': len(pnl_list), 'win_rate': len(wins) / len(pnl_list) if pnl_list else 0.0,
+                'profit_factor': abs(sum(wins)) / abs(sum(losses)) if losses else float('inf')
             }
-            
+
         return pair_performance
-            
-    def _calculate_performance_metrics(self, results: pd.DataFrame) -> Dict:
-        if results.empty:
-            return {}
-        
-        portfolio_returns = results['daily_return'].dropna()
-        portfolio_values = results['portfolio_value']
-        
-        if len(portfolio_returns) == 0:
-            return {}
-        
-        total_return = (portfolio_values.iloc[-1] - self.initial_capital) / self.initial_capital
-        annualized_return = (1 + total_return) ** (252 / len(portfolio_returns)) - 1
-        mean_daily_return = portfolio_returns.mean()
-        std_daily_return = portfolio_returns.std()
-        sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252)
-        cagr = (1 + portfolio_returns).prod() ** (252 / len(portfolio_returns)) - 1
-        volatility = std_daily_return * np.sqrt(252)
-        
-        cumulative_values = portfolio_values / self.initial_capital
-        running_max = cumulative_values.expanding().max()
-        drawdown = (cumulative_values - running_max) / running_max
-        max_drawdown = drawdown.min()
-        
-        winning_trades = [t for t in self.trades if t.get('pnl', 0) > 0]
-        total_trades = len(self.trades)
-        win_rate = len(winning_trades) / total_trades if total_trades > 0 else 0
-        
-        return {
-            'total_return': total_return,
-            'annualized_return': annualized_return,
-            'volatility': volatility,
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_drawdown,
-            'calmar_ratio': annualized_return / abs(max_drawdown) if max_drawdown < 0 else 0,
-            'win_rate': win_rate,
-            'total_trades': total_trades,
-            'final_portfolio_value': portfolio_values.iloc[-1]
-        }
