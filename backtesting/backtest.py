@@ -97,7 +97,8 @@ class Backtest:
             price1, price2 = row[symbol1], row[symbol2]
             if pd.isna(price1) or pd.isna(price2) or price1 == 0 or price2 == 0: 
                 continue
-            signal_strength, hedge_ratio, volatility = signal_generator.generate_signal(price1, price2)
+            signal_strength, hedge_ratio, volatility, alpha = signal_generator.generate_signal(price1, price2)
+            # print(signal_strength)
             if True: ## maybe fo other risk check
                 # Map raw signal strength to trade decisions
                 if signal_strength > self.config.entry_threshold:
@@ -108,7 +109,7 @@ class Backtest:
                     signal = 'CLOSE_POSITION'
                 else:
                     signal = 'HOLD'
-                current_prices = {'price1': price1, 'price2': price2}
+                current_prices = {'price1': price1, 'price2': price2, 'hedge_ratio': hedge_ratio, 'intercept' : alpha}
                 if signal in ['LONG_SPREAD', 'SHORT_SPREAD']:
                     
                     # Check if we don't already have a position
@@ -120,6 +121,8 @@ class Backtest:
                             position_size=position_size,
                             prices=current_prices,
                             current_volatility=volatility,
+                            hedge_ratio = hedge_ratio,
+                            alpha = alpha
                         )
 
                         self.trades.append({
@@ -139,7 +142,9 @@ class Backtest:
                         signal=signal,
                         position_size=0,
                         prices=current_prices,
-                        current_volatility=volatility
+                        current_volatility=volatility,
+                        hedge_ratio = hedge_ratio,
+                        alpha = alpha
                     )
                     exit_reason = result.get('exit_reason', signal)
                     # If position was closed (either by signal or stop loss)

@@ -1,5 +1,3 @@
-# settings.py
-
 """
 
 Configuration Management for Statistical Arbitrage System.
@@ -7,15 +5,8 @@ Configuration Management for Statistical Arbitrage System.
 """
 
 import os
-
 from dataclasses import dataclass, field
-
-from typing import Dict, List, Optional
-
-import json
-
-from pathlib import Path
-
+from typing import List
 from datetime import datetime
 
 @dataclass
@@ -30,7 +21,7 @@ class DataConfig:
     ])
 
     start_date: str = "2015-01-01"
-    end_date: str = datetime.now().strftime('%Y-%m-%d')
+    end_date: str =  datetime.now().strftime('%Y-%m-%d')
     datasource: str = 'yahoo'
     frequency: str = '1d'
     fill_method: str = 'forward'
@@ -41,11 +32,11 @@ class DataConfig:
 @dataclass
 
 class PairsConfig:
-    min_correlation: float = 0.6
+    min_correlation: float = 0.4
     max_correlation: float = 0.98
-    cointegration_threshold: float = 0.05
+    cointegration_threshold: float = 0.1
     min_spread_std: float = 0.005
-    max_spread_std: float = 0.25
+    max_spread_std: float = 0.5
     min_observations: int = 100
     exclude_pairs: List[str] = field(default_factory=list)
 
@@ -58,11 +49,11 @@ class ModelConfig:
     obs_var: float = 0.1
     delta: float = 1e-3
     hedge_obs_var: float = 0.01
-    lookback: int = 30
+    lookback: int = 60
     units: int = 32
     dropout: float = 0.2
-    z_thresh: float = 2.0
-    alpha: float = 0.6
+    z_thresh: float = 0.6
+    z_weight: float = 0.6
 
 @dataclass
 
@@ -73,7 +64,7 @@ class RiskConfig:
     max_leverage: float = 2.0
     transaction_cost: float = 0.001
     slippage: float = 0.0005
-    stop_loss_pct: float = 0.02  # Fixed stop loss as final backstop
+    stop_loss_pct: float = 0.05  # Fixed stop loss as final backstop
     # New dynamic and trailing stop parameters
     min_volatility_multiplier: float = 2.0  # Minimum volatility multiplier for dynamic stops
     max_volatility_multiplier: float = 5.0  # Maximum volatility multiplier for dynamic stops
@@ -84,7 +75,7 @@ class RiskConfig:
 
 class BacktestConfig:
     test_start_date: str = "2022-01-01"
-    entry_threshold: float = 2.0
+    entry_threshold: float = 1.5
     exit_threshold: float = 0.5
 
 @dataclass

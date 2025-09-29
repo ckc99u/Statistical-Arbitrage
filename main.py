@@ -31,18 +31,18 @@ def main():
     
     logger.info("Finding pairs...")
     pairs = pairs_finder.find_pairs(data)
-    
+    # for p in pairs:
+    #     print(p)
     if not pairs:
         logger.error("No valid pairs found")
         return
     
     print(f"Found {len(pairs)} valid pairs")
     
-    logger.info("Running backtest...")
     results = backtest_engine.run_backtest(data, pairs, signal_generator, risk_manager)
     print(results)
 
     return results
 
 if __name__ == "__main__":
-    results = main()
+    _ = main()

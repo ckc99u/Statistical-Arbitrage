@@ -122,7 +122,6 @@ class PairsFinder:
         hl = -np.log(2.0) / np.log(beta)
         if not np.isfinite(hl) or hl <= 0:
             return np.inf
-
         return float(hl)
 
 

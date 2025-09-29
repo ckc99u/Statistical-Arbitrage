@@ -19,21 +19,8 @@ class RiskManager:
         if portfolio_value <= 0 or volatility <= 0:
             return 0.0
             
-        # Base position size (20% of portfolio maximum)
-        base_size = self.config.max_position_size * portfolio_value
-        
-        # Scale by signal strength (capped at 100%)
-        signal_adjusted_size = base_size * min(abs(signal_strength), 1.0)
-        
-        # Higher volatility -> smaller multiplier -> smaller position
-        volatility_multiplier = max(0.1, min(1.0, 0.05 / volatility))
-        vol_adjusted_size = signal_adjusted_size * volatility_multiplier
-        
-        # absolute position size limits
-        max_position_limit = portfolio_value * self.config.max_position_size
-        final_size = min(vol_adjusted_size, max_position_limit)
-        
-        return final_size
+        max_position_limit = portfolio_value * self.config.max_position_size# * volatility_multiplier
+        return max_position_limit
     
     def check_risk_limits(self) -> bool:
         total_exposure = sum(abs(p['size']) * p['entry_price1'] for p in self.position_tracker.values())
@@ -52,7 +39,8 @@ class RiskManager:
 
         return commission + slippage
 
-    def update_position(self, pair_name: str, signal: str, position_size: float, prices: Dict, current_volatility: float = None) -> Dict:
+    def update_position(self, pair_name: str, signal: str, position_size: float, prices: Dict, current_volatility: float, hedge_ratio :float, 
+                            alpha:float) -> Dict:
 
         """Update a position based on a trading signal."""
         if pair_name not in self.position_tracker:
@@ -66,7 +54,10 @@ class RiskManager:
                 'max_favorable_pnl': 0.0,  # Track best profit for trailing stop
                 'dynamic_stop_loss': None,  # Dynamic stop loss level
                 'trailing_stop_distance': None,  # Trailing stop distance
-                'entry_volatility': 0.0  # Volatility at entry
+                'entry_volatility': 0.0,  # Volatility at entry
+                'hedge_ratio' : 0.0,
+                'intercept' : 0.0
+
             }
 
         position = self.position_tracker[pair_name]
@@ -81,8 +72,10 @@ class RiskManager:
                 position['size'] = -abs_position_size
             position['entry_price1'] = prices['price1']
             position['entry_price2'] = prices['price2']
+            position['hedge_ratio'] = hedge_ratio
+            position['intercept'] = alpha
             position['entry_time'] = pd.Timestamp.now()
-            position['entry_volatility'] = current_volatility or 0.02  # Default 2% if not provided
+            position['entry_volatility'] = current_volatility
             
             # Set initial dynamic stop loss based on volatility
             entry_spread = position['entry_price1'] - position['entry_price2']
@@ -171,8 +164,12 @@ class RiskManager:
     def calculate_pnl(self, position: Dict, current_prices: Dict) -> float:
         if position['size'] == 0:
             return 0.0
-        entry_spread = position['entry_price1'] - position['entry_price2']
-        current_spread = current_prices['price1'] - current_prices['price2']
-        spread_change = current_spread - entry_spread
+        entry_spread = (position['entry_price1'] - 
+                        position['hedge_ratio'] * position['entry_price2'])
+        
+        # Use current hedge ratio and intercept for current spread
+        current_spread = (current_prices['price1'] - 
+                        current_prices['hedge_ratio'] * current_prices['price2'])
 
+        spread_change = current_spread - entry_spread
         return spread_change * position['size']

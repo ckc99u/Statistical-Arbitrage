@@ -26,8 +26,6 @@ class DynamicHedgeKalman:
         return alpha, beta
 
     def update(self, y_obs, x_obs):
-        # unchanged math, but keep storing full state in self.beta
-        # returns beta for backward compatibility
         y = y_obs.values if isinstance(y_obs, pd.Series) else np.array(y_obs)
         x = x_obs.values if isinstance(x_obs, pd.Series) else np.array(x_obs)
         for i in range(len(y)):
@@ -111,6 +109,7 @@ class DeepPairsSignalGenerator:
         self.z_threshold = model_config.z_thresh
         self.model_config = model_config
         self.current_hedge_ratio = 1.0
+        self.current_intercept = 0.0
         self._spread_history = None # To maintain state during backtest
         self.current_intercept = 0.0
 
@@ -120,69 +119,37 @@ class DeepPairsSignalGenerator:
         _ = self.kalman_hedge.update(price1, price2)
         alpha, beta = self.kalman_hedge.get_params()
         self.current_intercept, self.current_hedge_ratio = alpha, beta
+
         spread = price1 - (alpha + beta * price2)  # use hedged spread
         self._spread_history = spread.copy() if isinstance(spread, pd.Series) else pd.Series(spread)
-        epochs = getattr(self.model_config, 'epochs', 50)
+        epochs = getattr(self.model_config, 'epochs', 1)
         batch_size = getattr(self.model_config, 'batch_size', 32)
         return self.lstm.train(self._spread_history, epochs=epochs, batch_size=batch_size)
 
-    # def generate_signal(self, price1, price2):
-    #     # Update hedge state and read alpha/beta
-    #     _ = self.kalman_hedge.update(pd.Series([price1]), pd.Series([price2]))
-    #     alpha, beta = self.kalman_hedge.get_params()
-    #     self.current_intercept, self.current_hedge_ratio = alpha, beta
-
-    #     spread_val = price1 - (alpha + beta * price2)
-
-    #     if self._spread_history is None:
-    #         self._spread_history = pd.Series([spread_val])
-    #     else:
-    #         self._spread_history = pd.concat([self._spread_history, pd.Series([spread_val])], ignore_index=True)
-    #         cap = max(252, self.lstm.lookback * 5)
-    #         if len(self._spread_history) > cap:
-    #             self._spread_history = self._spread_history[-cap:]
-
-    #     mu = self.kalman_spread.update(spread_val)
-    #     sigma = float(self._spread_history[-252:].std() if len(self._spread_history) >= 30 else 1.0)
-    #     z_score = (spread_val - mu) / sigma if sigma > 0 else 0.0
-
-    #     lstm_pred = self.lstm.predict(self._spread_history)
-    #     lstm_signal = (lstm_pred - spread_val) / sigma if sigma > 0 else 0.0
-
-    #     alpha_w = self.model_config.alpha
-    #     signal_strength = alpha_w * (-z_score) + (1 - alpha_w) * lstm_signal
-
-    #     volatility = sigma
-    #     # Return intercept explicitly
-    #     return signal_strength, beta, volatility, alpha
-
     def generate_signal(self, price1, price2):
         # Update hedge ratio
-        self.current_hedge_ratio = self.kalman_hedge.update(pd.Series([price1]), pd.Series([price2]))
-        spread_val = price1 - self.current_hedge_ratio * price2
-        
-        # FIX 3: Maintain and use a proper spread history
+        _ = self.kalman_hedge.update(pd.Series([price1]), pd.Series([price2]))
+        alpha, beta = self.kalman_hedge.get_params()
+        self.current_intercept, self.current_hedge_ratio = alpha, beta
+        spread_val = price1 - (self.current_intercept + self.current_hedge_ratio * price2)
         if self._spread_history is None:
             self._spread_history = pd.Series([spread_val])
         else:
             # Append new spread value to history
             self._spread_history = pd.concat([self._spread_history, pd.Series([spread_val])], ignore_index=True)
-            # Cap history size to prevent memory issues
-            if len(self._spread_history) > max(252, self.lstm.lookback*5):
-                self._spread_history = self._spread_history[-max(252, self.lstm.lookback*5):]
+            max_hist = 252 + self.lstm.lookback
+            if len(self._spread_history) > max_hist:
+                self._spread_history = self._spread_history[-max_hist:]
 
-        # Update Kalman spread mean
         mu = self.kalman_spread.update(spread_val)
         sigma = float(self._spread_history[-252:].std() if len(self._spread_history) >= 30 else 1.0)
         z_score = (spread_val - mu) / sigma if sigma > 0 else 0.0
         
         lstm_pred = self.lstm.predict(self._spread_history)
         lstm_signal = (lstm_pred - spread_val) / sigma if sigma > 0 else 0.0
-        
-        alpha = self.model_config.alpha
-        signal_strength = alpha * (-z_score) + (1 - alpha) * lstm_signal
-        
+        signal_strength = self.model_config.z_weight * (-z_score) + (1 - self.model_config.z_weight) * lstm_signal
         # Return volatility for the risk manager
         volatility = sigma
+        print(lstm_pred, z_score)
         
-        return signal_strength, self.current_hedge_ratio, volatility
+        return z_score, beta, volatility, alpha
