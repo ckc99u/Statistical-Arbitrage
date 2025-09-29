@@ -102,19 +102,29 @@ class PairsFinder:
         return all(checks)
 
     def calculate_half_life(self, spread: pd.Series) -> float:
+        spread = spread.dropna()
+        if len(spread) < 20:
+            return np.inf
+
         spread_lag = spread.shift(1).dropna()
-        spread_current = spread.iloc[1:len(spread_lag)+1]
-        
+        spread_current = spread.loc[spread_lag.index]
+
         X = spread_lag.values.reshape(-1, 1)
         y = spread_current.values
-        
+
         reg = LinearRegression().fit(X, y)
-        beta = reg.coef_[0]
-        
-        if beta >= 1 or beta <= 0: return np.inf
-        
-        half_life = -np.log(2) / (beta - 1)
-        return half_life
+        beta = float(reg.coef_[0])
+
+        if not (0.0 < beta < 1.0):
+            return np.inf
+
+        # Half-life formula for AR(1)
+        hl = -np.log(2.0) / np.log(beta)
+        if not np.isfinite(hl) or hl <= 0:
+            return np.inf
+
+        return float(hl)
+
 
     def calculate_spread_sharpe(self, spread: pd.Series) -> float:
         spread_returns = spread.pct_change().dropna()

@@ -16,39 +16,38 @@ class RiskManager:
     def reset(self):
         self.position_tracker.clear()
     def calculate_position_size(self, signal_strength: float, volatility: float, portfolio_value: float) -> float:
-        """Calculate position size based on signal strength and risk parameters."""
-        # Base position size as a percentage of portfolio
+        if portfolio_value <= 0 or volatility <= 0:
+            return 0.0
+            
+        # Base position size (20% of portfolio maximum)
         base_size = self.config.max_position_size * portfolio_value
-        adjusted_size = base_size * min(abs(signal_strength), 1.0)
-        # Adjust for volatility (Kelly criterion-inspired)
-        if volatility > 0:
-            vol_adjusted_size = adjusted_size / volatility
-        else:
-            vol_adjusted_size = adjusted_size
-
-        return vol_adjusted_size
+        
+        # Scale by signal strength (capped at 100%)
+        signal_adjusted_size = base_size * min(abs(signal_strength), 1.0)
+        
+        # Higher volatility -> smaller multiplier -> smaller position
+        volatility_multiplier = max(0.1, min(1.0, 0.05 / volatility))
+        vol_adjusted_size = signal_adjusted_size * volatility_multiplier
+        
+        # absolute position size limits
+        max_position_limit = portfolio_value * self.config.max_position_size
+        final_size = min(vol_adjusted_size, max_position_limit)
+        
+        return final_size
     
-
-
-    
-
     def check_risk_limits(self) -> bool:
         total_exposure = sum(abs(p['size']) * p['entry_price1'] for p in self.position_tracker.values())
-        #print(self.position_tracker)
         if total_exposure >= self.config.max_portfolio_exposure * self.portfolio_value:
             return False
         leverage = total_exposure / self.portfolio_value
         if leverage >= self.config.max_leverage:
             return False
-
         return True
 
     def calculate_transaction_costs(self, position_size: float) -> float:
 
         """Calculate transaction costs including slippage."""
-
         commission = abs(position_size) * self.config.transaction_cost
-
         slippage = abs(position_size) * self.config.slippage
 
         return commission + slippage
@@ -71,9 +70,15 @@ class RiskManager:
             }
 
         position = self.position_tracker[pair_name]
-        if signal in ['LONG_SPREAD', 'SHORT_SPREAD']:
+        exit_reason = None
+        pnl = 0.0
 
-            position['size'] = position_size if signal == 'LONG_SPREAD' else -position_size
+        if signal in ['LONG_SPREAD', 'SHORT_SPREAD']:
+            abs_position_size = abs(position_size)
+            if signal == 'LONG_SPREAD':
+                position['size'] = abs_position_size
+            elif signal == 'SHORT_SPREAD':
+                position['size'] = -abs_position_size
             position['entry_price1'] = prices['price1']
             position['entry_price2'] = prices['price2']
             position['entry_time'] = pd.Timestamp.now()
@@ -100,19 +105,23 @@ class RiskManager:
         if position['size'] != 0:
             self._update_trailing_stop(position, prices)
 
-        if signal == 'CLOSE_POSITION' or self.stop_loss_hit(position, prices):
-
-            pnl = self.calculate_realized_pnl(position, prices)
-
+        if signal == 'CLOSE_POSITION':
+            pnl = self.calculate_pnl(position, prices)
+            exit_reason = "CLOSE_POSITION"
             # Reset position
             position['size'] = 0.0
             position['max_favorable_pnl'] = 0.0
             position['dynamic_stop_loss'] = None
             position['trailing_stop_distance'] = None
+        elif self.stop_loss_hit(position, prices):
+            pnl = self.calculate_pnl(position, prices)
+            exit_reason = "STOP_LOSS"
+            position['size'] = 0.0
+            position['max_favorable_pnl'] = 0.0
+            position['dynamic_stop_loss'] = None
+            position['trailing_stop_distance'] = None
+        return {'realized_pnl': pnl, 'exit_reason': exit_reason}
 
-            return {'realized_pnl': pnl}
-
-        return {'realized_pnl': 0.0}
 
     def _update_trailing_stop(self, position: Dict, prices: Dict):
         """Update trailing stop based on current P&L."""
@@ -120,8 +129,7 @@ class RiskManager:
         if position['size'] == 0:
             return
             
-        current_pnl = self._calculate_unrealized_pnl(position, prices)
-        
+        current_pnl = self.calculate_pnl(position, prices)
         # Update max favorable P&L
         if current_pnl > position['max_favorable_pnl']:
             position['max_favorable_pnl'] = current_pnl
@@ -134,32 +142,11 @@ class RiskManager:
                 new_stop_distance = position['dynamic_stop_loss'] * (1 - reduction_factor)
                 position['dynamic_stop_loss'] = max(new_stop_distance, position['trailing_stop_distance'])
 
-    def _calculate_unrealized_pnl(self, position: Dict, current_prices: Dict) -> float:
-        """Calculate unrealized P&L for a position."""
-        
-        if position['size'] == 0:
-            return 0.0
-
-        entry_spread = position['entry_price1'] - position['entry_price2']
-        current_spread = current_prices['price1'] - current_prices['price2']
-        spread_change = current_spread - entry_spread
-
-        # P&L depends on position direction
-        if position['size'] > 0:  # Long spread
-            pnl = spread_change * abs(position['size'])
-        else:  # Short spread
-            pnl = -spread_change * abs(position['size'])
-
-        return pnl
-
     def stop_loss_hit(self, position: Dict, prices: Dict) -> bool:
-
         """Check if a stop loss has been triggered - now with dynamic and trailing stops."""
-
         if position['size'] == 0:
             return False
-            
-        current_pnl = self._calculate_unrealized_pnl(position, prices)
+        current_pnl = self.calculate_pnl(position, prices)
         
         # Check if current loss exceeds dynamic stop loss
         if current_pnl < -abs(position['dynamic_stop_loss']):
@@ -181,28 +168,11 @@ class RiskManager:
 
         return False
 
-    def calculate_realized_pnl(self, position: Dict, current_prices: Dict) -> float:
-
-        """Calculate realized P&L when closing a position."""
-
+    def calculate_pnl(self, position: Dict, current_prices: Dict) -> float:
         if position['size'] == 0:
-
             return 0.0
-
         entry_spread = position['entry_price1'] - position['entry_price2']
-
         current_spread = current_prices['price1'] - current_prices['price2']
-
         spread_change = current_spread - entry_spread
 
-        # P&L depends on position direction
-
-        if position['size'] > 0: # Long spread
-
-            pnl = spread_change * abs(position['size'])
-
-        else: # Short spread
-
-            pnl = -spread_change * abs(position['size'])
-
-        return pnl
+        return spread_change * position['size']

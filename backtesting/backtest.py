@@ -9,13 +9,9 @@ MODIFIED to support dynamic, time-varying hedge ratios and enhanced risk managem
 """
 
 import pandas as pd
-
 import numpy as np
-
 from typing import Dict, List, Tuple
-
 import logging
-
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -96,7 +92,7 @@ class Backtest:
             daily_pnl = 0.0
             daily_trades = []
             pair_name = f"{symbol1}-{symbol2}"
-            if symbol1 not in row.index or symbol2 not in row.index: 
+            if symbol1 not in row.index or symbol2 not in row.index:
                 continue
             price1, price2 = row[symbol1], row[symbol2]
             if pd.isna(price1) or pd.isna(price2) or price1 == 0 or price2 == 0: 
@@ -117,37 +113,35 @@ class Backtest:
                     
                     # Check if we don't already have a position
                     if pair_name not in risk_manager.position_tracker or risk_manager.position_tracker[pair_name]['size'] == 0:
-                        
                         position_size = risk_manager.calculate_position_size(signal_strength, volatility, portfolio_value)
-                        if True:
-                            result = risk_manager.update_position(
-                                pair_name=pair_name,
-                                signal=signal,
-                                position_size=position_size,
-                                prices=current_prices,
-                                current_volatility=volatility
-                            )
-                            # Log the trade entry
-                            self.trades.append({
+                        result = risk_manager.update_position(
+                            pair_name=pair_name,
+                            signal=signal,
+                            position_size=position_size,
+                            prices=current_prices,
+                            current_volatility=volatility,
+                        )
+
+                        self.trades.append({
                                 'date': date, 'pair': pair_name, 'action': 'ENTRY', 'signal': signal,
                                 'size': position_size, 'price1': price1, 'price2': price2, 'pnl': 0.0,
                                 'hold_days': 0
                             })
                             
-                            transaction_cost = risk_manager.calculate_transaction_costs(position_size)
-                            daily_pnl -= transaction_cost
+                        transaction_cost = risk_manager.calculate_transaction_costs(position_size)
+                        daily_pnl -= transaction_cost
+
 
                 # Handle position exit or check for stop loss
                 elif signal == 'CLOSE_POSITION' or (pair_name in risk_manager.position_tracker and risk_manager.position_tracker[pair_name]['size'] != 0):
-                    # Update position (this will check for stop losses and trailing stops)
                     result = risk_manager.update_position(
                         pair_name=pair_name,
                         signal=signal,
-                        position_size=0,  # Not used for closes
+                        position_size=0,
                         prices=current_prices,
                         current_volatility=volatility
                     )
-                    
+                    exit_reason = result.get('exit_reason', signal)
                     # If position was closed (either by signal or stop loss)
                     if result['realized_pnl'] != 0:
                         trade_pnl = result['realized_pnl']
@@ -164,7 +158,7 @@ class Backtest:
                         
                         # Log the exit trade
                         self.trades.append({
-                            'date': date, 'pair': pair_name, 'action': 'EXIT', 'signal': signal,
+                            'date': date, 'pair': pair_name, 'action': 'EXIT', 'signal': exit_reason,
                             'size': entry_trade['size'] if entry_trade else 0, 
                             'price1': price1, 'price2': price2, 'pnl': trade_pnl,
                             'hold_days': hold_days

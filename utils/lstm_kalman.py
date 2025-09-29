@@ -19,12 +19,15 @@ class DynamicHedgeKalman:
         self.P = np.eye(2) * 1e3
         self.beta = np.zeros((2, 1))
 
+    def get_params(self):
+        """Return intercept (alpha) and hedge ratio (beta) as floats."""
+        alpha = float(self.beta[0, 0])
+        beta = float(self.beta[1, 0])
+        return alpha, beta
+
     def update(self, y_obs, x_obs):
-        """
-        Updates the state (intercept and hedge ratio) for each observation.
-        y_obs: price of asset 1
-        x_obs: price of asset 2
-        """
+        # unchanged math, but keep storing full state in self.beta
+        # returns beta for backward compatibility
         y = y_obs.values if isinstance(y_obs, pd.Series) else np.array(y_obs)
         x = x_obs.values if isinstance(x_obs, pd.Series) else np.array(x_obs)
         for i in range(len(y)):
@@ -37,7 +40,7 @@ class DynamicHedgeKalman:
             e = y[i] - H @ self.beta
             self.beta += K * e
             self.P = (np.eye(2) - K @ H) @ self.P
-        return float(self.beta[1, 0])
+        return float(self.beta[1, 0])  # beta
 
 class SpreadKalmanFilter:
     """Kalman Filter for spread state estimation. No changes needed."""
@@ -109,19 +112,49 @@ class DeepPairsSignalGenerator:
         self.model_config = model_config
         self.current_hedge_ratio = 1.0
         self._spread_history = None # To maintain state during backtest
+        self.current_intercept = 0.0
 
     def fit(self, price1, price2):
-        # re-initialize LSTM for each pair to avoid weight contamination
+        # re-init LSTM as before
         self.lstm = SpreadLSTM(self.model_config.lookback, self.model_config.units, self.model_config.dropout)
-        self.current_hedge_ratio = self.kalman_hedge.update(price1, price2)
-        spread = price1 - self.current_hedge_ratio * price2
+        _ = self.kalman_hedge.update(price1, price2)
+        alpha, beta = self.kalman_hedge.get_params()
+        self.current_intercept, self.current_hedge_ratio = alpha, beta
+        spread = price1 - (alpha + beta * price2)  # use hedged spread
         self._spread_history = spread.copy() if isinstance(spread, pd.Series) else pd.Series(spread)
-        
-        # FIX 2: Correctly call model.fit with epochs from config
-        epochs = getattr(self.model_config, 'epochs', 50) # Use epochs from config
+        epochs = getattr(self.model_config, 'epochs', 50)
         batch_size = getattr(self.model_config, 'batch_size', 32)
-        
         return self.lstm.train(self._spread_history, epochs=epochs, batch_size=batch_size)
+
+    # def generate_signal(self, price1, price2):
+    #     # Update hedge state and read alpha/beta
+    #     _ = self.kalman_hedge.update(pd.Series([price1]), pd.Series([price2]))
+    #     alpha, beta = self.kalman_hedge.get_params()
+    #     self.current_intercept, self.current_hedge_ratio = alpha, beta
+
+    #     spread_val = price1 - (alpha + beta * price2)
+
+    #     if self._spread_history is None:
+    #         self._spread_history = pd.Series([spread_val])
+    #     else:
+    #         self._spread_history = pd.concat([self._spread_history, pd.Series([spread_val])], ignore_index=True)
+    #         cap = max(252, self.lstm.lookback * 5)
+    #         if len(self._spread_history) > cap:
+    #             self._spread_history = self._spread_history[-cap:]
+
+    #     mu = self.kalman_spread.update(spread_val)
+    #     sigma = float(self._spread_history[-252:].std() if len(self._spread_history) >= 30 else 1.0)
+    #     z_score = (spread_val - mu) / sigma if sigma > 0 else 0.0
+
+    #     lstm_pred = self.lstm.predict(self._spread_history)
+    #     lstm_signal = (lstm_pred - spread_val) / sigma if sigma > 0 else 0.0
+
+    #     alpha_w = self.model_config.alpha
+    #     signal_strength = alpha_w * (-z_score) + (1 - alpha_w) * lstm_signal
+
+    #     volatility = sigma
+    #     # Return intercept explicitly
+    #     return signal_strength, beta, volatility, alpha
 
     def generate_signal(self, price1, price2):
         # Update hedge ratio
