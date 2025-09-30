@@ -215,7 +215,8 @@ class Backtest:
             else:  # Short spread
                 position['size'] = -position_value
                 signal_type = 'SHORT_SPREAD'
-            
+            shares1 = int(position_value / price1)
+            shares2 = int(shares1 * hedge_ratio)
             # Record entry
             position.update({
                 'entry_price1': price1,
@@ -223,11 +224,12 @@ class Backtest:
                 'entry_date': date,
                 'entry_signal': signal_strength,
                 'hedge_ratio': hedge_ratio,
-                'intercept': intercept
+                'intercept': intercept,
+                'shares1': shares1,
+                'shares2': shares2 
             })
             
-            shares1 = int(position_value / price1)
-            shares2 = int(shares1 * hedge_ratio)
+
 
             # Calculate detailed transaction costs
             if self.transaction_costs:
@@ -314,8 +316,6 @@ class Backtest:
                     'entry_price2': 0.0,
                     'entry_date': None,
                     'entry_signal': 0.0,    
-                    'shares1': shares1,
-                    'shares2': shares2 
                 })
                 
                 # Store trade

@@ -19,10 +19,6 @@ class PairsFinder:
         self.config = config
         
         self.financial_tickers = ticker
-        # [
-        #     'XLF', 'BAC', 'JPM', 'WFC', 'C', 'GS', 'MS', 'BLK', 'SCHW', 
-        #     'USB', 'TFC', 'PNC', 'AXP', 'COF', 'STT', 'BK', 'FITB', 'RF'
-        # ]
         self.cointegration_pvalue_threshold = 0.02
         
     def find_pairs(self, data: pd.DataFrame) -> List[Dict]:
@@ -35,10 +31,7 @@ class PairsFinder:
             available_tickers = list(data.columns)
             
         analysis_data = data[available_tickers].copy()
-        
-        #   cointegration matrix approach
         cointegrated_pairs = self._find_cointegrated_pairs(analysis_data)
-        
         logger.info(f"Found {len(cointegrated_pairs)} cointegrated pairs")
         return cointegrated_pairs
     
@@ -115,9 +108,6 @@ class PairsFinder:
             vol1 = returns1.std() * np.sqrt(252)
             vol2 = returns2.std() * np.sqrt(252)
             
-            #   quality score (simple scoring)
-            quality_score = max(0, 100 * (1 - pvalue * 50))  # Scale p-value to 0-100
-            
             # Return dictionary matching your system's expected keys
             return {
                 # Core identifiers (required by your system)
@@ -138,11 +128,6 @@ class PairsFinder:
                 # Risk measures
                 'vol1': vol1,
                 'vol2': vol2,
-                
-                # Quality scores (matching your system's interface)
-                'quality_score': quality_score,
-                ' _score': quality_score,  # This was missing!
-                'observations': len(series_1),
                 
                 # Optional sector info
                 'sector': 'Financial' if symbol1 in self.financial_tickers and symbol2 in self.financial_tickers else 'Mixed'
